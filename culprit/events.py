@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from culprit.security import redact_data
+
 
 class EventLog:
     def __init__(self, path: Path | None = None):
@@ -23,7 +25,7 @@ class EventLog:
         self._listeners.append(listener)
 
     def emit(self, kind: str, **data: Any) -> dict[str, Any]:
-        event = {"t": round(time.time(), 3), "kind": kind, **data}
+        event = redact_data({"t": round(time.time(), 3), "kind": kind, **data})
         with self._lock:
             self.events.append(event)
             if self.path is not None:

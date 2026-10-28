@@ -11,6 +11,7 @@ from pathlib import Path
 
 from culprit.demo_repo import is_demo_repo
 from culprit.gitops import git
+from culprit.security import execution_env
 
 
 def check_repo(path: Path) -> int:
@@ -24,7 +25,7 @@ def check_repo(path: Path) -> int:
         subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(path), str(clone)], check=True)
         for n, sha in enumerate(commits, 1):
             git(clone, "-c", "advice.detachedHead=false", "checkout", "-q", "--force", sha)
-            env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=str(clone), PYTEST_DISABLE_PLUGIN_AUTOLOAD="1")
+            env = dict(execution_env(), PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=str(clone), PYTEST_DISABLE_PLUGIN_AUTOLOAD="1")
             result = subprocess.run(
                 [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"],
                 cwd=clone, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",

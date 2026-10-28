@@ -5,17 +5,20 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import threading
+import sys
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 
 from culprit.config import Settings, load_dotenv
+from culprit.security import redact
 
 
-async def _offline_command(args: argparse.Namespace) -> int:
+async def _hunt_command(args: argparse.Namespace) -> int:
     from culprit.demo_repo import DEMO_BUG, build_demo_repo, is_demo_repo
     from culprit.events import EventLog
     from culprit.hunt import hunt
+    from culprit.ui import HuntView, PlainView
 
     if args.command == "demo":
         repo = Path("demo/kirana-billing")
@@ -23,8 +26,8 @@ async def _offline_command(args: argparse.Namespace) -> int:
             repo = build_demo_repo(repo)
         bug = DEMO_BUG
     else:
-        repo = Path(args.repo).expanduser()
-        if not is_demo_repo(repo):
+        repo = args.repo
+        if args.offline and not is_demo_repo(repo):
             raise ValueError("Offline mode only works with the bundled demo repo (run: culprit demo-repo).")
         bug = args.bug if args.bug is not None else Path(args.bug_file).read_text(encoding="utf-8")
     settings = Settings.from_env()
@@ -32,26 +35,23 @@ async def _offline_command(args: argparse.Namespace) -> int:
         if not 1 <= args.parallel <= 40:
             raise ValueError("--parallel must be between 1 and 40.")
         settings.parallel = args.parallel
-    out_dir = Path(args.out) if args.out else settings.runs_dir / f"{datetime.now():%Y%m%d-%H%M%S}-{repo.name}"
+    import re
+    name = re.sub(r"[^A-Za-z0-9_.-]", "_", str(repo).rstrip("/\\").replace("\\", "/").split("/")[-1]).removesuffix(".git") or "repo"
+    out_dir = Path(args.out) if args.out else settings.runs_dir / f"{datetime.now():%Y%m%d-%H%M%S}-{name}"
     if args.out is None and out_dir.exists():
         out_dir = out_dir.with_name(out_dir.name + f"-{datetime.now():%f}")
     events = EventLog(out_dir / "events.jsonl")
-    lock = threading.Lock()
-
-    def plain(event: dict) -> None:
-        fields = {key: value for key, value in event.items() if key not in ("t", "kind")}
-        if event["kind"] == "history":
-            fields["commits"] = len(fields["commits"])
-        if fields.get("model") == "offline-script":
-            fields["label"] = fields.get("label", "").replace("(offline)", "(offline stand-in)")
-        with lock:
-            print(f"{event['kind']} {json.dumps(fields, ensure_ascii=False)}", flush=True)
-
-    events.on(plain)
-    data, code = await hunt(
-        repo, bug, settings, out_dir, bad=getattr(args, "bad", "HEAD"), good=args.good,
-        offline=True, no_fix=getattr(args, "no_fix", False), events=events,
-    )
+    view = (PlainView(sys.stdout) if args.plain or not sys.stdout.isatty() else
+            HuntView(repo, bug, "Local (offline stand-in)" if args.offline else args.runner, settings.parallel))
+    events.on(view)
+    with view if isinstance(view, HuntView) else nullcontext():
+        data, code = await hunt(
+            repo, bug, settings, out_dir, bad=getattr(args, "bad", "HEAD"), good=args.good,
+            offline=args.offline, no_fix=getattr(args, "no_fix", False), events=events,
+            runner_kind=args.runner, trust_repo=getattr(args, "i_trust_this_repo", False),
+        )
+        if isinstance(view, HuntView):
+            view.finish(data)
     if data["ok"]:
         culprit = data["culprit"]["commit"]
         print(f"Culprit: {culprit['short']} {culprit['subject']}")
@@ -59,7 +59,7 @@ async def _offline_command(args: argparse.Namespace) -> int:
         print(f"Chosen fix: {data['fixes']['chosen'] or 'none'}")
     else:
         print(data["reason"])
-    print(f"Report: {out_dir / 'report.html'}")
+    print(redact(f"Report: {out_dir / 'report.html'}"))
     return code
 
 
@@ -102,13 +102,17 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     load_dotenv()
+    if args.command == "doctor":
+        from culprit.doctor import doctor
+
+        return asyncio.run(doctor(Settings.from_env()))
     if args.command == "demo-repo":
         from culprit.demo_repo import build_demo_repo
 
         try:
             path = build_demo_repo(args.path, args.force)
         except (OSError, ValueError, RuntimeError) as exc:
-            print(str(exc))
+            print(redact(str(exc)))
             return 1
         print(f"Demo repository ready: {path}")
         return 0
@@ -119,14 +123,26 @@ def main(argv: list[str] | None = None) -> int:
             if not is_demo_repo(args.repo):
                 print("Local execution of this repository requires --i-trust-this-repo.")
                 return 1
-        if args.offline:
-            try:
-                return asyncio.run(_offline_command(args))
-            except (OSError, ValueError, RuntimeError) as exc:
-                print(str(exc))
-                return 1
-            except KeyboardInterrupt:
-                print("Interrupted.")
-                return 1
-    print("not implemented yet")
+        try:
+            return asyncio.run(_hunt_command(args))
+        except (OSError, ValueError, RuntimeError) as exc:
+            print(redact(str(exc)))
+            return 1
+        except KeyboardInterrupt:
+            print("Interrupted.")
+            return 1
+    if args.command == "report":
+        from culprit.report import write_report
+
+        try:
+            run_dir = Path(args.run_dir)
+            data = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("run.json must contain an object")
+            write_report(data, run_dir)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            print(redact(f"Could not rebuild report: {exc}"))
+            return 1
+        print(redact(f"Report: {run_dir / 'report.html'}"))
+        return 0
     return 1

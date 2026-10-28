@@ -18,6 +18,7 @@ from pathlib import Path
 
 from culprit.runners.base import RunResult, Runner
 from culprit.runners.scripts import SCRIPTS
+from culprit.security import execution_env
 
 
 class LocalRunnerError(RuntimeError):
@@ -121,7 +122,7 @@ class LocalRunner(Runner):
                         dest.parent.mkdir(parents=True, exist_ok=True)
                         dest.write_bytes(data)
                     env = dict(
-                        os.environ,
+                        execution_env(),
                         CULPRIT_REPO=str(repo),
                         CULPRIT_WORK=str(work),
                         CULPRIT_PYTHON=sys.executable,

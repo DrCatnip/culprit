@@ -11,18 +11,29 @@ from culprit import gitops, prompts
 from culprit.events import EventLog
 from culprit.llm import LLMError
 from culprit.runners.base import REGRESSION_TEST, Runner, VerifyResult, safe_relpath
+from culprit.security import redact, redact_data, safe_error
 
 
 def candidate_files(reply: dict, existing: set[str]) -> dict[str, str]:
     """Validate model paths before uploading or building any patch."""
     files: dict[str, str] = {}
-    for item in reply.get("files", []):
+    if not isinstance(reply, dict) or not isinstance(reply.get("files"), list):
+        raise ValueError("fix must contain a files array")
+    seen = set()
+    for item in reply["files"]:
+        if not isinstance(item, dict) or "path" not in item or "content" not in item:
+            raise ValueError("fix files need path and content fields")
         raw = item["path"]
         path = safe_relpath(raw)
         if PureWindowsPath(path).drive or path == "." or any(part.lower() == ".git" for part in path.split("/")):
             raise ValueError(f"unsafe path in patch: {raw!r}")
-        if path == REGRESSION_TEST:
+        if path.casefold() == REGRESSION_TEST.casefold():
             continue
+        if path.casefold() in seen or any(
+            path.casefold().startswith(old + "/") or old.startswith(path.casefold() + "/") for old in seen
+        ):
+            raise ValueError("fix contains overlapping or duplicate paths")
+        seen.add(path.casefold())
         if path not in existing and not (path.startswith("tests/") and path.endswith(".py")):
             raise ValueError(f"fix cannot create this file: {path}")
         if not isinstance(item["content"], str):
@@ -42,8 +53,8 @@ def passes_baseline(result: VerifyResult, baseline: VerifyResult) -> bool:
     # failures must never become a passing candidate through an empty set.
     if result.suite_code != 1 or baseline.error or baseline.suite_code != 1:
         return False
-    failures = {test for test in result.suite_failures if not test.startswith(REGRESSION_TEST)}
-    old_failures = {test for test in baseline.suite_failures if not test.startswith(REGRESSION_TEST)}
+    failures = {test for test in result.suite_failures if test.replace("\\", "/").split("::")[0] != REGRESSION_TEST}
+    old_failures = {test for test in baseline.suite_failures if test.replace("\\", "/").split("::")[0] != REGRESSION_TEST}
     return bool(result.suite_failures) and failures <= old_failures
 
 
@@ -73,10 +84,14 @@ async def find_fix(
                 llm.chat_json, "super", prompts.FIX_SYSTEM.format(style=prompts.FIX_STYLES[style]),
                 user + retry, purpose=f"fix_{style}", temperature=0.4 if style == "robust" else 0.2,
             )
-            candidate["summary"] = reply.get("summary", "")
-            return candidate, candidate_files(reply, existing)
+            files = candidate_files(reply, existing)
+            if not isinstance(reply.get("summary", ""), str):
+                raise ValueError("fix summary must be text")
+            candidate["summary"] = redact(reply.get("summary", ""))
+            gitops.validate_patch_paths(repo, bad_sha, [*files, REGRESSION_TEST])
+            return candidate, files
         except (LLMError, ValueError, KeyError, TypeError) as exc:
-            candidate["error"] = str(exc)
+            candidate["error"] = redact(str(exc))
             return candidate, {}
 
     generated = await asyncio.gather(generate("minimal"), generate("robust"))
@@ -88,11 +103,15 @@ async def find_fix(
     async def verify(candidate: dict, files: dict[str, str] | None = None) -> VerifyResult:
         if candidate["error"]:
             return VerifyResult(None, None, error=candidate["error"])
-        return await runner.verify(bad_sha, test_code, timeout, patch_files=files,
-                                   revert_sha=guilty_sha if candidate["name"] == "revert" else None)
+        try:
+            gitops.validate_patch_paths(repo, bad_sha, [*(files or {}), REGRESSION_TEST])
+            return await runner.verify(bad_sha, test_code, timeout, patch_files=files,
+                                       revert_sha=guilty_sha if candidate["name"] == "revert" else None)
+        except Exception as exc:
+            return VerifyResult(None, None, error=safe_error(exc))
 
     baseline, *results = await asyncio.gather(
-        runner.verify(bad_sha, test_code, timeout),
+        verify({"name": "baseline", "error": None}),
         *(verify(candidate, files) for candidate, files in generated),
         verify(revert),
     )
@@ -100,7 +119,7 @@ async def find_fix(
     async def record(candidate: dict, result: VerifyResult, files: dict[str, str] | None = None) -> None:
         candidate.update(repro_code=result.repro_code, suite_code=result.suite_code,
                          passed=passes_baseline(result, baseline), error=result.error or candidate["error"],
-                         output=result.output)
+                         output=redact(result.output))
         if not candidate["error"]:
             patch, error = await asyncio.to_thread(
                 gitops.patch_for, repo, bad_sha, files=files,
@@ -128,5 +147,6 @@ async def find_fix(
     chosen = min(model_fixes, key=lambda candidate: candidate["lines"]) if model_fixes else revert if revert["passed"] else None
     if chosen:
         chosen["chosen"] = True
-    return {"baseline": {"suite_code": baseline.suite_code, "failures": sorted(baseline.suite_failures)},
-            "candidates": candidates, "chosen": chosen["name"] if chosen else None}
+    return redact_data({"baseline": {"suite_code": baseline.suite_code, "failures": sorted(baseline.suite_failures),
+                                     "error": baseline.error, "output": baseline.output},
+                        "candidates": candidates, "chosen": chosen["name"] if chosen else None})

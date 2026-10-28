@@ -9,7 +9,7 @@ import tarfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 TEST_PATH = "/culprit/test_culprit_repro.py"
 PATCH_TAR = "/culprit/patch.tar"
@@ -89,8 +89,15 @@ def failed_tests(output: str) -> set[str]:
 
 def safe_relpath(path: str) -> str:
     """Reject absolute paths, '..' and .git: model output must stay inside the repo."""
+    if not isinstance(path, str):
+        raise ValueError("patch path must be text")
     p = PurePosixPath(path.strip().replace("\\", "/"))
-    if not path.strip() or p.is_absolute() or ".." in p.parts or (p.parts and p.parts[0] == ".git"):
+    if (not p.parts or p.is_absolute() or PureWindowsPath(path).drive
+            or ".." in p.parts or any(ord(c) < 32 or ord(c) == 127 for c in path)
+            or any(part.casefold() == ".git" or part.endswith((".", " "))
+                   or any(c in part for c in ':<>"|?*')
+                   or re.fullmatch(r"(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?", part)
+                   for part in p.parts)):
         raise ValueError(f"unsafe path in patch: {path!r}")
     return str(p)
 

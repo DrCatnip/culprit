@@ -7,7 +7,7 @@ folder you run Culprit from.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 TOKEN_FACTORY_URL = "https://api.tokenfactory.nebius.com/v1/"
@@ -66,8 +66,8 @@ def _int_env(name: str, default: int) -> int:
 
 @dataclass
 class Settings:
-    api_key: str | None
-    project_id: str | None
+    api_key: str | None = field(repr=False)
+    project_id: str | None = field(repr=False)
     base_url: str
     models: dict[str, str]
     image: str

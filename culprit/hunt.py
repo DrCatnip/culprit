@@ -14,10 +14,12 @@ from culprit.config import Settings
 from culprit.demo_repo import is_demo_repo
 from culprit.events import EventLog
 from culprit.fixer import find_fix
-from culprit.llm import LLMError, OfflineDemoLLM
+from culprit.llm import LLMError, OfflineDemoLLM, TokenFactoryLLM
 from culprit.report import write_report
 from culprit.runners.base import RunResult, Runner, Status, classify, failure_types
 from culprit.runners.local_runner import LocalRunner
+from culprit.runners import make_runner
+from culprit.security import redact, redact_data
 
 
 class HuntStopped(RuntimeError):
@@ -33,12 +35,13 @@ def _now() -> str:
 class _Hunt:
     def __init__(self, repo: str, bug: str, settings: Settings, out_dir: Path, events: EventLog,
                  bad: str, good: str | None, runner: Runner | None, llm: Any,
-                 offline: bool, no_fix: bool):
+                 offline: bool, no_fix: bool, runner_kind: str, trust_repo: bool):
         self.source, self.bug, self.settings = repo, bug, settings
         self.out_dir, self.events = out_dir, events
         self.bad_ref, self.good_ref = bad, good
         self.runner, self.llm = runner, llm
         self.offline, self.no_fix = offline, no_fix
+        self.runner_kind, self.trust_repo = runner_kind, trust_repo
         self.repo = Path(repo)
         self.bad, self.good = "", ""
         self.test_code = ""
@@ -66,7 +69,7 @@ class _Hunt:
         try:
             yield
         except BaseException as exc:
-            detail = "Interrupted." if isinstance(exc, asyncio.CancelledError) else str(exc)
+            detail = "Interrupted." if isinstance(exc, asyncio.CancelledError) else redact(str(exc), (self.settings.api_key or "",))
             self.events.emit("stage", name=name, status="failed", detail=detail)
             raise
         else:
@@ -79,7 +82,12 @@ class _Hunt:
     async def prepare(self) -> None:
         if self.offline and not is_demo_repo(self.repo):
             raise HuntStopped("Offline mode only works with the bundled demo repo (run: culprit demo-repo).", 1)
+        if not self.offline and self.llm is None and not self.settings.api_key:
+            raise HuntStopped("NEBIUS_API_KEY is not set. Configure it in the environment or .env.", 1)
         self.repo = await asyncio.to_thread(gitops.ensure_local_repo, self.source, self.settings.cache_dir)
+        local = self.offline or self.runner_kind == "local" or getattr(self.runner, "short", None) == "local"
+        if local and not is_demo_repo(self.repo) and not self.trust_repo:
+            raise HuntStopped("Local execution of this repository requires --i-trust-this-repo.", 1)
         self.bad = gitops.rev_parse(self.repo, self.bad_ref)
         if self.good_ref:
             self.good = gitops.rev_parse(self.repo, self.good_ref)
@@ -87,11 +95,11 @@ class _Hunt:
             if self.good == self.bad or self.good not in history:
                 raise HuntStopped("--good must be older than --bad on its first-parent history.", 1)
         if self.llm is None:
-            if not self.offline:
-                raise HuntStopped("Live hunts are not implemented yet; use --offline for the bundled demo.", 1)
-            self.llm = OfflineDemoLLM(self.repo, self.events)
+            self.llm = (OfflineDemoLLM(self.repo, self.events) if self.offline
+                        else TokenFactoryLLM(self.settings, self.events))
         if self.runner is None:
-            self.runner = LocalRunner(parallel=self.settings.parallel)
+            self.runner = (LocalRunner(parallel=self.settings.parallel) if local
+                           else make_runner(self.runner_kind, self.settings))
         self.data["models"] = self.llm.describe()
         self.data["repo"].update(name=self.repo.name, bad=gitops.commit_info(self.repo, self.bad).to_dict())
         if self.good:
@@ -310,6 +318,10 @@ class _Hunt:
                     await self.runner.close()
                 except Exception:
                     self.warn("Could not fully close the runner.")
+                if getattr(self.runner, "cleanup_note", ""):
+                    self.warn(self.runner.cleanup_note)
+                if any(detail.get("truncated") for detail in self.runner.stats.details):
+                    self.warn("Some Sandbox output was truncated; review probe classifications and candidate logs.")
                 stats = self.runner.stats
                 self.data["runner"] = {"name": self.runner.name, "parallel": self.settings.parallel,
                                        "runs": stats.runs, "sandbox_seconds": stats.seconds,
@@ -317,7 +329,14 @@ class _Hunt:
                                        "reported_cost": stats.reported_cost}
             if self.llm:
                 self.data.update(usage=self.llm.usage.rows(), llm_cost_usd=self.llm.usage.total_cost())
+                close = getattr(self.llm, "close", None)
+                if close:
+                    try:
+                        await asyncio.to_thread(close)
+                    except Exception:
+                        self.warn("Could not fully close the model client.")
             self.data.update(finished_at=_now(), seconds=round(time.monotonic() - self.t0, 3))
+            self.data = redact_data(self.data, (self.settings.api_key or "",))
             async with self.stage("report"):
                 write_report(self.data, self.out_dir)
             self.events.emit("run_finished", ok=self.data["ok"], reason=self.data["reason"],
@@ -329,8 +348,10 @@ async def hunt(
     repo: str | Path, bug: str, settings: Settings, out_dir: Path, *,
     bad: str = "HEAD", good: str | None = None, offline: bool = False, no_fix: bool = False,
     runner: Runner | None = None, llm: Any = None, events: EventLog | None = None,
+    runner_kind: str = "contree", trust_repo: bool = False,
 ) -> tuple[dict, int]:
     out_dir = out_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     events = events if events is not None else EventLog(out_dir / "events.jsonl")
-    return await _Hunt(str(repo), bug, settings, out_dir, events, bad, good, runner, llm, offline, no_fix).run()
+    return await _Hunt(str(repo), bug, settings, out_dir, events, bad, good, runner, llm,
+                       offline, no_fix, runner_kind, trust_repo).run()

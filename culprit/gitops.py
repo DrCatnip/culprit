@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from collections.abc import Iterable
 
 
 class GitError(RuntimeError):
@@ -134,6 +135,27 @@ def make_bundle(repo: Path, out: Path) -> Path:
     return out
 
 
+def validate_patch_paths(repo: Path, base: str, paths: Iterable[str]) -> None:
+    """Reject writes through tracked symlinks, gitlinks and case aliases on any OS."""
+    from culprit.runners.base import safe_relpath
+
+    tree = {}
+    for record in git(repo, "ls-tree", "-r", "-t", "-z", base).split("\0"):
+        if record:
+            meta, name = record.split("\t", 1)
+            tree[name.casefold()] = (name, meta.split()[0])
+    for raw in paths:
+        path = safe_relpath(raw)
+        parts = path.split("/")
+        for n in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:n])
+            entry = tree.get(prefix.casefold())
+            if entry and (entry[0] != prefix or (
+                entry[1] != "040000" if n < len(parts) else entry[1] not in ("100644", "100755")
+            )):
+                raise ValueError(f"patch path crosses a non-regular file or case alias: {path}")
+
+
 def patch_for(
     repo: Path,
     base: str,
@@ -150,6 +172,7 @@ def patch_for(
 
     tmp = Path(tempfile.mkdtemp(prefix="culprit-patch-"))
     try:
+        validate_patch_paths(repo, base, list(files or {}) + list(extra or {}))
         wt = tmp / "wt"
         proc = subprocess.run(
             ["git", "clone", "-q", "--shared", "--no-checkout", str(repo), str(wt)], capture_output=True
@@ -168,8 +191,12 @@ def patch_for(
         for group in (files or {}, extra or {}):
             for rel, content in group.items():
                 dest = wt / safe_relpath(rel)
+                if not dest.resolve().is_relative_to(wt.resolve()) or any(
+                    parent.is_symlink() for parent in (dest, *dest.parents) if parent.is_relative_to(wt)
+                ):
+                    raise ValueError(f"patch path crosses a symlink: {rel}")
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_text(content if content.endswith("\n") else content + "\n", encoding="utf-8")
+                dest.write_bytes(content.encode("utf-8"))
         git(wt, "add", "-A")
         return git(wt, "-c", "core.quotepath=off", "diff", "--cached", "--no-color"), None
     except (GitError, ValueError, OSError) as exc:

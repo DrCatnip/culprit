@@ -14,12 +14,40 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from culprit.config import MODEL_LABELS, PRICES_PER_MILLION
+from culprit.security import redact, redact_data, safe_error
 
 
 class LLMError(RuntimeError):
     pass
+
+
+def validate_endpoint(base_url: str) -> None:
+    """Credentials are sent only to the specified Nebius Token Factory endpoint."""
+    try:
+        url = urlsplit(base_url)
+        valid = (url.scheme == "https" and url.hostname == "api.tokenfactory.nebius.com"
+                 and url.port in (None, 443) and url.path.rstrip("/") == "/v1"
+                 and not url.username and not url.password and not url.query and not url.fragment)
+    except ValueError:
+        valid = False
+    if not valid:
+        raise LLMError("Token Factory must use https://api.tokenfactory.nebius.com/v1/.")
+
+
+def is_nemotron(model: str) -> bool:
+    return bool(re.fullmatch(r"nvidia/[A-Za-z0-9._/-]+", model, re.I)) and "nemotron" in model.lower()
+
+
+def make_client(settings):
+    from openai import OpenAI
+
+    validate_endpoint(settings.base_url)
+    if not settings.api_key:
+        raise LLMError("NEBIUS_API_KEY is not set. Copy .env.example to .env and add your key.")
+    return OpenAI(base_url=settings.base_url, api_key=settings.api_key, timeout=240, max_retries=2)
 
 
 # ---------------------------------------------------------------- JSON parsing
@@ -124,16 +152,19 @@ class UsageTracker:
 class TokenFactoryLLM:
     offline = False
 
-    def __init__(self, settings, events) -> None:
-        from openai import OpenAI
-
+    def __init__(self, settings, events, *, client=None) -> None:
+        validate_endpoint(settings.base_url)
         if not settings.api_key:
             raise LLMError("NEBIUS_API_KEY is not set. Copy .env.example to .env and add your key.")
-        self.client = OpenAI(base_url=settings.base_url, api_key=settings.api_key, timeout=240, max_retries=2)
+        self.client = client if client is not None else make_client(settings)
+        self.secrets = (settings.api_key,)
         self.models = dict(settings.models)
         self.events = events
         self.usage = UsageTracker()
         self.json_mode = True
+
+    def close(self) -> None:
+        self.client.close()
 
     def describe(self) -> dict:
         return {role: {"model": m, "label": MODEL_LABELS[role]} for role, m in self.models.items()}
@@ -143,36 +174,44 @@ class TokenFactoryLLM:
         from openai import BadRequestError
 
         model = self.models[role]
+        if not is_nemotron(model):
+            raise LLMError("Every model role must use an NVIDIA Nemotron model.")
         label = MODEL_LABELS[role]
         self.events.emit("model_started", role=role, model=model, label=label, purpose=purpose)
-        messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        messages = [{"role": "system", "content": redact(system, self.secrets)},
+                    {"role": "user", "content": redact(user, self.secrets)}]
+        if role == "nano" and max_tokens == 12000:
+            max_tokens = 4000
         t0 = time.monotonic()
-        last_error: Exception | None = None
+        last_error = "invalid JSON reply"
+        use_json = self.json_mode
         for _ in range(4):
             kwargs = dict(model=model, messages=messages, temperature=temperature, max_tokens=max_tokens)
-            if self.json_mode:
+            if use_json:
                 kwargs["response_format"] = {"type": "json_object"}
             try:
                 resp = self.client.chat.completions.create(**kwargs)
             except BadRequestError as exc:
-                if self.json_mode:  # some models refuse JSON mode; retry without it
+                if use_json and any(word in str(exc).lower() for word in ("response_format", "json mode", "json_object")):
+                    use_json = False
                     self.json_mode = False
-                    last_error = exc
+                    last_error = safe_error(exc)
                     continue
-                last_error = exc
+                last_error = safe_error(exc)
                 break
             except Exception as exc:
-                last_error = exc
+                last_error = safe_error(exc)
                 break
             usage = getattr(resp, "usage", None)
             pt = getattr(usage, "prompt_tokens", 0) or 0
             ct = getattr(usage, "completion_tokens", 0) or 0
             self.usage.add_call(role, model, pt, ct)
-            text = resp.choices[0].message.content or ""
+            text = ""
             try:
+                text = redact(resp.choices[0].message.content or "", self.secrets)
                 data = extract_json(text)
-            except ValueError as exc:
-                last_error = exc
+            except (ValueError, IndexError, AttributeError, TypeError):
+                last_error = "invalid JSON reply after the allowed retries"
                 messages = messages + [
                     {"role": "assistant", "content": text[-6000:] or "(empty)"},
                     {"role": "user", "content": "That was not a valid JSON object. Reply again with ONLY the JSON object."},
@@ -182,11 +221,11 @@ class TokenFactoryLLM:
             self.usage.add_time(role, model, secs)
             self.events.emit("model_finished", role=role, model=model, label=label, purpose=purpose,
                              seconds=round(secs, 1), ok=True, prompt_tokens=pt, completion_tokens=ct)
-            return data
+            return redact_data(data, self.secrets)
         secs = time.monotonic() - t0
         self.usage.add_time(role, model, secs)
         self.events.emit("model_finished", role=role, model=model, label=label, purpose=purpose,
-                         seconds=round(secs, 1), ok=False, error=str(last_error))
+                         seconds=round(secs, 1), ok=False, error=last_error)
         raise LLMError(f"{label} ({purpose}) failed: {last_error}")
 
 
