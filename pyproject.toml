@@ -20,3 +20,6 @@ culprit = "culprit.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["culprit*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

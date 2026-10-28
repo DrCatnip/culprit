@@ -43,7 +43,8 @@ if [ "$2" = "1" ] && [ -f requirements.txt ]; then
 fi
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONPATH="$REPO:$REPO/src${PYTHONPATH:+:$PYTHONPATH}"
-"$PY" -m pytest -q -rfE --tb=short -p no:cacheprovider "$WORK/test_culprit_repro.py" 2>&1
+# Verbose mode preserves exception names in the short summary for classification.
+"$PY" -m pytest -vv -rfE --tb=short -p no:cacheprovider "$WORK/test_culprit_repro.py" 2>&1
 """
 
 VERIFY_SH = r"""#!/bin/sh
@@ -65,9 +66,9 @@ mkdir -p tests
 cp "$WORK/test_culprit_repro.py" tests/test_culprit_regression.py
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONPATH="$REPO:$REPO/src${PYTHONPATH:+:$PYTHONPATH}"
-"$PY" -m pytest -q -rfE --tb=short -p no:cacheprovider tests/test_culprit_regression.py > "$WORK/repro.log" 2>&1
+"$PY" -m pytest -vv -rfE --tb=short -p no:cacheprovider tests/test_culprit_regression.py > "$WORK/repro.log" 2>&1
 R1=$?
-"$PY" -m pytest -q -rfE --tb=short -p no:cacheprovider > "$WORK/suite.log" 2>&1
+"$PY" -m pytest -vv -rfE --tb=short -p no:cacheprovider > "$WORK/suite.log" 2>&1
 R2=$?
 echo "=== CULPRIT CODES $R1 $R2 ==="
 echo "=== CULPRIT REPRO ==="
