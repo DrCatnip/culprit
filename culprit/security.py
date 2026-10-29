@@ -49,6 +49,8 @@ def execution_env() -> dict[str, str]:
     secrets = [value for name, value in os.environ.items() if _credential_name(name) and value]
     return {name: value for name, value in os.environ.items()
             if not _credential_name(name)
+            and name.upper() not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+                                     "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
             and not any(secret == value or len(secret) >= 8 and secret in value for secret in secrets)}
 
 

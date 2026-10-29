@@ -112,8 +112,9 @@ class ContreeRunner(Runner):
         return truncated
 
     def _check_upload(self, files: dict[str, bytes]) -> None:
-        key = self.settings.api_key
-        if key and any(key.encode("utf-8") in content for content in files.values()):
+        credentials = (self.settings.api_key, self.settings.project_id)
+        if any(value and value.encode("utf-8") in content
+               for value in credentials for content in files.values()):
             raise RunnerError("Sandbox upload contains the configured host credential; refusing to upload it.")
 
     async def prepare(self, bundle: Path, head_sha: str) -> str:
@@ -142,7 +143,7 @@ class ContreeRunner(Runner):
             raise RunnerError(f"Sandbox setup failed: {safe_error(exc)}.") from None
         self._record("setup.sh", time.monotonic() - t0, ready, error=ready.exit_code != 0)
         self.checkpoint_id = str(ready.uuid) if ready.uuid is not None else None
-        out = redact(_text(ready.stdout) + "\n" + _text(ready.stderr), (self.settings.api_key or "",))
+        out = redact(_text(ready.stdout) + "\n" + _text(ready.stderr), (self.settings.api_key or "", self.settings.project_id or ""))
         if ready.exit_code != 0 or "CULPRIT_READY" not in out:
             tail = "\n".join(out.strip().splitlines()[-20:])
             raise RunnerError(f"Sandbox setup failed (exit {ready.exit_code}).\n{tail}")
@@ -170,7 +171,7 @@ class ContreeRunner(Runner):
                     disposable=True,  # a throwaway branch of the checkpoint
                     timeout=timeout,
                 ), timeout)
-                secrets = (self.settings.api_key or "",)
+                secrets = (self.settings.api_key or "", self.settings.project_id or "")
                 res = RunResult(r.exit_code, redact(_text(r.stdout), secrets), redact(_text(r.stderr), secrets), time.monotonic() - t0)
                 raw = getattr(getattr(r, "result", None), "_raw", None)
                 state = getattr(getattr(raw, "result", None), "state", None)

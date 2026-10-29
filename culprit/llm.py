@@ -157,7 +157,7 @@ class TokenFactoryLLM:
         if not settings.api_key:
             raise LLMError("NEBIUS_API_KEY is not set. Copy .env.example to .env and add your key.")
         self.client = client if client is not None else make_client(settings)
-        self.secrets = (settings.api_key,)
+        self.secrets = (settings.api_key, settings.project_id or "")
         self.models = dict(settings.models)
         self.events = events
         self.usage = UsageTracker()

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
+import stat
 import shutil
 import subprocess
 import tempfile
@@ -11,15 +14,41 @@ from pathlib import Path
 from collections.abc import Iterable
 
 
+from culprit.security import execution_env, redact
+
+
+def remove_tree(path: Path) -> None:
+    """Git object files can be read-only on Windows, even in our own temp clones."""
+    if not path.exists():
+        return
+
+    def remove_readonly(function, filename, exc_info):
+        if not isinstance(exc_info[1], PermissionError):
+            raise exc_info[1]
+        os.chmod(filename, stat.S_IWRITE)
+        function(filename)
+
+    shutil.rmtree(path, onerror=remove_readonly)
+
+
 class GitError(RuntimeError):
     pass
 
 
-def git(repo: Path, *args: str, check: bool = True) -> str:
-    proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True)
+def _git_env(*, isolated: bool = False) -> dict[str, str]:
+    env = execution_env()
+    if isolated:
+        # Host patch building must not run global hooks or smudge/clean filters.
+        env = {name: value for name, value in env.items() if not name.startswith("GIT_CONFIG_")}
+        env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    return env
+
+
+def git(repo: Path, *args: str, check: bool = True, isolated: bool = False) -> str:
+    proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, env=_git_env(isolated=isolated))
     if check and proc.returncode != 0:
         err = proc.stderr.decode("utf-8", errors="replace").strip()
-        raise GitError(f"git {' '.join(args)} failed: {err}")
+        raise GitError(redact(f"git {' '.join(args)} failed: {err}"))
     return proc.stdout.decode("utf-8", errors="replace")
 
 
@@ -54,16 +83,17 @@ def ensure_local_repo(src: str, cache_dir: Path) -> Path:
         if name.endswith(".git"):
             name = name[:-4]
         name = re.sub(r"[^A-Za-z0-9_.-]+", "_", name) or "repo"
-        dest = cache_dir / name
+        dest = cache_dir / f"{name}-{hashlib.sha256(src.encode()).hexdigest()[:16]}"
         if dest.exists():
             git(dest, "fetch", "--all", "--tags", "--quiet")
         else:
             cache_dir.mkdir(parents=True, exist_ok=True)
-            proc = subprocess.run(["git", "clone", "--quiet", src, str(dest)], capture_output=True)
+            proc = subprocess.run(["git", "clone", "--quiet", "--no-checkout", "--template=", src, str(dest)],
+                                  capture_output=True, env=execution_env())
             if proc.returncode != 0:
-                raise GitError(proc.stderr.decode("utf-8", errors="replace").strip())
+                raise GitError(redact(proc.stderr.decode("utf-8", errors="replace").strip()))
         return dest
-    raise GitError(f"Not a git folder or a git URL: {src}")
+    raise GitError(redact(f"Not a git folder or a git URL: {src}"))
 
 
 def rev_parse(repo: Path, ref: str) -> str:
@@ -88,12 +118,13 @@ def first_parent_history(repo: Path, bad: str, limit: int = 1024) -> list[str]:
 
 
 def is_ancestor(repo: Path, older: str, newer: str) -> bool:
-    proc = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", older, newer], capture_output=True)
+    proc = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", older, newer], capture_output=True, env=execution_env())
     return proc.returncode == 0
 
 
 def diff_of(repo: Path, sha: str, max_chars: int = 40_000) -> str:
-    out = git(repo, "show", "--stat", "--patch", "--no-color", "--format=commit %H%nAuthor: %an%nDate: %ad%n%n%B", sha)
+    out = git(repo, "show", "--stat", "--patch", "--no-color", "--no-ext-diff", "--no-textconv",
+              "--format=commit %H%nAuthor: %an%nDate: %ad%n%n%B", sha)
     if len(out) > max_chars:
         return out[:max_chars] + "\n... (diff truncated)\n"
     return out
@@ -109,7 +140,7 @@ def ls_files(repo: Path, ref: str) -> list[str]:
 
 
 def file_at(repo: Path, ref: str, path: str) -> str | None:
-    proc = subprocess.run(["git", "-C", str(repo), "show", f"{ref}:{path}"], capture_output=True)
+    proc = subprocess.run(["git", "-C", str(repo), "show", f"{ref}:{path}"], capture_output=True, env=execution_env())
     if proc.returncode != 0:
         return None
     data = proc.stdout
@@ -122,7 +153,7 @@ DEPENDENCY_FILES = ("requirements.txt", "requirements-dev.txt", "pyproject.toml"
 
 
 def deps_changed(repo: Path, a: str, b: str) -> bool:
-    proc = subprocess.run(["git", "-C", str(repo), "diff", "--quiet", a, b, "--", *DEPENDENCY_FILES], capture_output=True)
+    proc = subprocess.run(["git", "-C", str(repo), "diff", "--quiet", a, b, "--", *DEPENDENCY_FILES], capture_output=True, env=execution_env())
     return proc.returncode == 1
 
 
@@ -175,16 +206,17 @@ def patch_for(
         validate_patch_paths(repo, base, list(files or {}) + list(extra or {}))
         wt = tmp / "wt"
         proc = subprocess.run(
-            ["git", "clone", "-q", "--shared", "--no-checkout", str(repo), str(wt)], capture_output=True
+            ["git", "clone", "-q", "--shared", "--no-checkout", "--template=", str(repo), str(wt)],
+            capture_output=True, env=_git_env(isolated=True),
         )
         if proc.returncode != 0:
-            return None, proc.stderr.decode("utf-8", errors="replace").strip()
-        git(wt, "-c", "advice.detachedHead=false", "checkout", "-q", "--force", base)
+            return None, redact(proc.stderr.decode("utf-8", errors="replace").strip())
+        git(wt, "-c", "advice.detachedHead=false", "checkout", "-q", "--force", base, isolated=True)
         if revert_sha:
             proc = subprocess.run(
                 ["git", "-C", str(wt), "-c", "user.name=culprit", "-c", "user.email=culprit@localhost",
                  "-c", "core.hooksPath=/dev/null", "revert", "--no-commit", revert_sha],
-                capture_output=True,
+                capture_output=True, env=_git_env(isolated=True),
             )
             if proc.returncode != 0:
                 return None, "git revert hit a conflict"
@@ -197,12 +229,12 @@ def patch_for(
                     raise ValueError(f"patch path crosses a symlink: {rel}")
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(content.encode("utf-8"))
-        git(wt, "add", "-A")
-        return git(wt, "-c", "core.quotepath=off", "diff", "--cached", "--no-color"), None
+        git(wt, "add", "-A", isolated=True)
+        return git(wt, "-c", "core.quotepath=off", "diff", "--cached", "--no-color", isolated=True), None
     except (GitError, ValueError, OSError) as exc:
-        return None, str(exc)
+        return None, redact(str(exc))
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        remove_tree(tmp)
 
 
 def changed_lines(patch: str, exclude: tuple[str, ...] = ()) -> int:

@@ -172,10 +172,12 @@ def render_markdown(data: dict) -> str:
 
 def write_report(data: dict, out_dir: Path) -> None:
     data = redact_data(data)
+    # Validate/render before replacing saved evidence when rebuilding invalid input.
+    page, markdown = render_html(data), render_markdown(data)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "run.json").write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    (out_dir / "report.html").write_text(render_html(data), encoding="utf-8")
-    (out_dir / "report.md").write_text(render_markdown(data), encoding="utf-8")
+    (out_dir / "report.html").write_text(page, encoding="utf-8")
+    (out_dir / "report.md").write_text(markdown, encoding="utf-8")
     (out_dir / "test_culprit_repro.py").write_bytes(data.get("repro", {}).get("test_code", "").encode("utf-8"))
     chosen = next((c for c in data.get("fixes", {}).get("candidates", []) if c.get("chosen") and c.get("passed")), None)
     patch_path = out_dir / "fix.patch"

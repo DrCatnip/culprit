@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path, PureWindowsPath
 from typing import Any
@@ -11,6 +10,7 @@ from culprit import gitops, prompts
 from culprit.events import EventLog
 from culprit.llm import LLMError
 from culprit.runners.base import REGRESSION_TEST, Runner, VerifyResult, safe_relpath
+from culprit.tasks import gather, run_blocking
 from culprit.security import redact, redact_data, safe_error
 
 
@@ -80,7 +80,7 @@ async def find_fix(
                      "repro_code": None, "suite_code": None, "lines": 0,
                      "patch": None, "error": None, "chosen": False}
         try:
-            reply = await asyncio.to_thread(
+            reply = await run_blocking(
                 llm.chat_json, "super", prompts.FIX_SYSTEM.format(style=prompts.FIX_STYLES[style]),
                 user + retry, purpose=f"fix_{style}", temperature=0.4 if style == "robust" else 0.2,
             )
@@ -94,7 +94,7 @@ async def find_fix(
             candidate["error"] = redact(str(exc))
             return candidate, {}
 
-    generated = await asyncio.gather(generate("minimal"), generate("robust"))
+    generated = await gather(generate("minimal"), generate("robust"))
     revert = {"name": "revert", "model": "git revert", "summary": "Revert the guilty commit.",
               "passed": False, "repro_code": None, "suite_code": None, "lines": 0,
               "patch": None, "error": None, "chosen": False}
@@ -110,7 +110,7 @@ async def find_fix(
         except Exception as exc:
             return VerifyResult(None, None, error=safe_error(exc))
 
-    baseline, *results = await asyncio.gather(
+    baseline, *results = await gather(
         verify({"name": "baseline", "error": None}),
         *(verify(candidate, files) for candidate, files in generated),
         verify(revert),
@@ -121,7 +121,7 @@ async def find_fix(
                          passed=passes_baseline(result, baseline), error=result.error or candidate["error"],
                          output=redact(result.output))
         if not candidate["error"]:
-            patch, error = await asyncio.to_thread(
+            patch, error = await run_blocking(
                 gitops.patch_for, repo, bad_sha, files=files,
                 revert_sha=guilty_sha if candidate["name"] == "revert" else None,
                 extra={REGRESSION_TEST: test_code},

@@ -6,7 +6,7 @@ Culprit turns a plain-English bug report into a reproducible pytest test, search
 
 [View the offline example report](docs/index.html) · [Architecture](docs/ARCHITECTURE.md) · [MIT license](LICENSE)
 
-**Verification status:** the implementation has 144 passing tests and a working offline workflow. **G2 remains BLOCKED only because live Nebius credentials are unavailable.** Live model quality, Sandbox execution, cloud latency, and cloud cost have not been verified. The example report uses an **offline stand-in**, not real model responses. Public GitHub, YouTube, and hosted-demo links are pending publication.
+**Verification status:** the implementation has 165 passing tests and a working offline workflow. **G2 remains BLOCKED only because live Nebius credentials are unavailable.** Live model quality, Sandbox execution, cloud latency, and cloud cost have not been verified. The example report uses an **offline stand-in**, not real model responses. Public GitHub, YouTube, and hosted-demo links are pending publication.
 
 ## Why
 
@@ -154,6 +154,9 @@ Run folders contain `run.json`, `events.jsonl`, self-contained `report.html`, sh
 - Credential values, sensitive fields, Authorization headers, and URL userinfo are redacted from events/reports. Known credential variables are removed from local execution environments. Still review repository contents before upload and inspect reports before sharing; a Git bundle includes history.
 - Sandboxes are a beta service. Parallelism is capped at 40 in Culprit; actual access, quotas, latency, retention, and billing need live confirmation. Reported summed-run/wall-time ratios are estimates, not measured serial-vs-parallel benchmarks.
 - A verified patch remains a suggestion for human review. No live model/Sandbox performance or cost result is claimed; **G2 remains blocked solely by unavailable live credentials**.
+- Ctrl+C drains parallel operations, closes the runner, and writes a partial report. An in-flight synchronous model/Git call must finish before its client or temporary files can be released; requests and their retries can delay cancellation until their configured timeouts. Filesystem failures are reported explicitly and can prevent report creation or cleanup.
+
+Phase 8's three live demo measurements remain pending: **G2 BLOCKED — live Nebius credentials unavailable.** No live timing, Sandbox-run, or model-cost averages are published. See the [changelog](CHANGELOG.md) for the offline-tested hardening changes.
 
 ## Development and demo-page publication
 

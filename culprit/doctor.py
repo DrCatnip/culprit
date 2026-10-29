@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import difflib
 import shutil
 import subprocess
@@ -15,6 +14,7 @@ from culprit.config import Settings, TOKEN_FACTORY_URL
 from culprit.events import EventLog
 from culprit.llm import LLMError, TokenFactoryLLM, is_nemotron, make_client, validate_endpoint
 from culprit.runners.contree_runner import check_access
+from culprit.tasks import run_blocking
 from culprit.security import redact, safe_error
 
 
@@ -31,12 +31,12 @@ async def doctor(settings: Settings, emit: Callable[[str], None] = print) -> int
 
     def result(name: str, ok: bool, detail: str) -> None:
         checks.append(ok)
-        emit(redact(f"{name}: {'ok' if ok else 'FAILED'} - {detail}", (settings.api_key or "",)))
+        emit(redact(f"{name}: {'ok' if ok else 'FAILED'} - {detail}", (settings.api_key or "", settings.project_id or "")))
 
     result("Python", sys.version_info >= (3, 11), sys.version.split()[0] + " (requires 3.11+)")
     if shutil.which("git"):
         try:
-            version = await asyncio.to_thread(subprocess.run, ["git", "--version"], capture_output=True, text=True)
+            version = await run_blocking(subprocess.run, ["git", "--version"], capture_output=True, text=True)
             result("Git", version.returncode == 0, version.stdout.strip() if version.returncode == 0 else "could not run git")
         except OSError:
             result("Git", False, "could not run git")
@@ -47,7 +47,7 @@ async def doctor(settings: Settings, emit: Callable[[str], None] = print) -> int
     emit("NEBIUS_PROJECT_ID: " + ("set" if settings.project_id else "missing"))
     emit("Token Factory endpoint: " + TOKEN_FACTORY_URL)
     for role, model in settings.models.items():
-        emit(redact(f"Configured {role}: {model}", (settings.api_key or "",)))
+        emit(redact(f"Configured {role}: {model}", (settings.api_key or "", settings.project_id or "")))
     client = None
     nano_found = False
     try:
@@ -55,7 +55,7 @@ async def doctor(settings: Settings, emit: Callable[[str], None] = print) -> int
         if not settings.api_key:
             raise LLMError("NEBIUS_API_KEY is missing; model checks require credentials.")
         client = make_client(settings)
-        page = await asyncio.to_thread(client.models.list)
+        page = await run_blocking(client.models.list)
         available = [model.id for model in page.data]
         result("Token Factory", True, "model list received")
         for role, model in settings.models.items():
@@ -70,7 +70,7 @@ async def doctor(settings: Settings, emit: Callable[[str], None] = print) -> int
         if nano_found:
             llm = TokenFactoryLLM(settings, EventLog(), client=client)
             started = time.monotonic()
-            reply = await asyncio.to_thread(llm.chat_json, "nano", "Reply with only a JSON object.",
+            reply = await run_blocking(llm.chat_json, "nano", "Reply with only a JSON object.",
                                             'Return {"ok": true}.', purpose="doctor", max_tokens=128)
             result("Nano JSON call", reply.get("ok") is True, f"JSON response in {time.monotonic() - started:.2f}s")
         else:
@@ -82,13 +82,15 @@ async def doctor(settings: Settings, emit: Callable[[str], None] = print) -> int
     finally:
         if client is not None:
             try:
-                await asyncio.to_thread(client.close)
+                await run_blocking(client.close)
             except Exception as exc:
                 result("Token Factory cleanup", False, safe_error(exc))
     if settings.api_key and settings.project_id:
         try:
             ok, detail = await check_access()
-            result("Sandboxes", ok, detail if ok else detail + "; verify project access with contree auth ls")
+            result("Sandboxes", ok, detail if ok else detail +
+                   "; verify project access with contree auth ls, contact contree@nebius.com if inactive, "
+                   "or explicitly use --runner local for a trusted repository")
         except Exception as exc:
             result("Sandboxes", False, safe_error(exc))
     else:

@@ -12,8 +12,9 @@ from culprit.security import redact_data
 
 
 class EventLog:
-    def __init__(self, path: Path | None = None):
+    def __init__(self, path: Path | None = None, *, secrets: tuple[str, ...] = ()):
         self.path = path
+        self.secrets = secrets
         self.events: list[dict[str, Any]] = []
         self._listeners: list[Callable[[dict[str, Any]], None]] = []
         self._lock = threading.Lock()
@@ -25,7 +26,7 @@ class EventLog:
         self._listeners.append(listener)
 
     def emit(self, kind: str, **data: Any) -> dict[str, Any]:
-        event = redact_data({"t": round(time.time(), 3), "kind": kind, **data})
+        event = redact_data({"t": round(time.time(), 3), "kind": kind, **data}, self.secrets)
         with self._lock:
             self.events.append(event)
             if self.path is not None:

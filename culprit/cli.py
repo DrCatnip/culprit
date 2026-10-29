@@ -14,6 +14,11 @@ from culprit.config import Settings, load_dotenv
 from culprit.security import redact
 
 
+class _Parser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        super().error(redact(message))
+
+
 async def _hunt_command(args: argparse.Namespace) -> int:
     from culprit.demo_repo import DEMO_BUG, build_demo_repo, is_demo_repo
     from culprit.events import EventLog
@@ -72,9 +77,9 @@ def _hunt_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--out", metavar="DIR")
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main(argv: list[str] | None = None) -> int:
     """Parse a command and return its exit code."""
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         prog="culprit", description="Find the commit that caused a bug."
     )
     commands = parser.add_subparsers(dest="command", required=True)
@@ -100,8 +105,8 @@ def main(argv: list[str] | None = None) -> int:
     report = commands.add_parser("report", help="Rebuild reports from a saved run.")
     report.add_argument("run_dir", metavar="RUN_DIR")
 
-    args = parser.parse_args(argv)
     load_dotenv()
+    args = parser.parse_args(argv)
     if args.command == "doctor":
         from culprit.doctor import doctor
 
@@ -114,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ValueError, RuntimeError) as exc:
             print(redact(str(exc)))
             return 1
-        print(f"Demo repository ready: {path}")
+        print(redact(f"Demo repository ready: {path}"))
         return 0
     if args.command in ("demo", "hunt"):
         if args.command == "hunt" and args.runner == "local" and not args.i_trust_this_repo:
@@ -140,9 +145,21 @@ def main(argv: list[str] | None = None) -> int:
             if not isinstance(data, dict):
                 raise ValueError("run.json must contain an object")
             write_report(data, run_dir)
-        except (OSError, ValueError, TypeError, KeyError) as exc:
+        except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
             print(redact(f"Could not rebuild report: {exc}"))
             return 1
         print(redact(f"Report: {run_dir / 'report.html'}"))
         return 0
     return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Return a useful error without a traceback for configuration or interruption."""
+    try:
+        return _main(argv)
+    except KeyboardInterrupt:
+        print("Interrupted.")
+        return 1
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(redact(str(exc)))
+        return 1

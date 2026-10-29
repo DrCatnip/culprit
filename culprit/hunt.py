@@ -19,6 +19,7 @@ from culprit.report import write_report
 from culprit.runners.base import RunResult, Runner, Status, classify, failure_types
 from culprit.runners.local_runner import LocalRunner
 from culprit.runners import make_runner
+from culprit.tasks import gather, run_blocking
 from culprit.security import redact, redact_data
 
 
@@ -38,6 +39,7 @@ class _Hunt:
                  offline: bool, no_fix: bool, runner_kind: str, trust_repo: bool):
         self.source, self.bug, self.settings = repo, bug, settings
         self.out_dir, self.events = out_dir, events
+        events.secrets += (settings.api_key or "", settings.project_id or "")
         self.bad_ref, self.good_ref = bad, good
         self.runner, self.llm = runner, llm
         self.offline, self.no_fix = offline, no_fix
@@ -69,7 +71,7 @@ class _Hunt:
         try:
             yield
         except BaseException as exc:
-            detail = "Interrupted." if isinstance(exc, asyncio.CancelledError) else redact(str(exc), (self.settings.api_key or "",))
+            detail = "Interrupted." if isinstance(exc, asyncio.CancelledError) else redact(str(exc), (self.settings.api_key or "", self.settings.project_id or ""))
             self.events.emit("stage", name=name, status="failed", detail=detail)
             raise
         else:
@@ -84,7 +86,7 @@ class _Hunt:
             raise HuntStopped("Offline mode only works with the bundled demo repo (run: culprit demo-repo).", 1)
         if not self.offline and self.llm is None and not self.settings.api_key:
             raise HuntStopped("NEBIUS_API_KEY is not set. Configure it in the environment or .env.", 1)
-        self.repo = await asyncio.to_thread(gitops.ensure_local_repo, self.source, self.settings.cache_dir)
+        self.repo = await run_blocking(gitops.ensure_local_repo, self.source, self.settings.cache_dir)
         local = self.offline or self.runner_kind == "local" or getattr(self.runner, "short", None) == "local"
         if local and not is_demo_repo(self.repo) and not self.trust_repo:
             raise HuntStopped("Local execution of this repository requires --i-trust-this-repo.", 1)
@@ -104,8 +106,9 @@ class _Hunt:
         self.data["repo"].update(name=self.repo.name, bad=gitops.commit_info(self.repo, self.bad).to_dict())
         if self.good:
             self.data["repo"]["good"] = gitops.commit_info(self.repo, self.good).to_dict()
-        bundle = await asyncio.to_thread(gitops.make_bundle, self.repo, self.out_dir / "repo.bundle")
+        bundle = self.out_dir / "repo.bundle"
         try:
+            await run_blocking(gitops.make_bundle, self.repo, bundle)
             detail = await self.runner.prepare(bundle, self.bad)
         finally:
             bundle.unlink(missing_ok=True)
@@ -133,7 +136,7 @@ class _Hunt:
         history = gitops.first_parent_history(self.repo, self.bad, limit=2**31 - 1)
         offsets = sorted({2**power for power in range(10) if 2**power < len(history)} |
                          ({len(history) - 1} if len(history) > 1 else set()))
-        outcomes = await asyncio.gather(*(self.probe(history[offset], round_number=0, offset=offset) for offset in offsets))
+        outcomes = await gather(*(self.probe(history[offset], round_number=0, offset=offset) for offset in offsets))
         self.data["scout"] = [{"offset": offset, "short": history[offset][:8],
                                "status": status.value, "reason": reason}
                               for offset, (_, status, reason) in zip(offsets, outcomes)]
@@ -156,7 +159,7 @@ class _Hunt:
                 user = original_user
                 if feedback:
                     user += "\n\n" + prompts.REPRO_RETRY.format(problem=feedback, test_code=self.test_code, output=output)
-                reply = await asyncio.to_thread(self.llm.chat_json, "super", prompts.REPRO_SYSTEM,
+                reply = await run_blocking(self.llm.chat_json, "super", prompts.REPRO_SYSTEM,
                                                 user, purpose="write_repro_test")
                 self.test_code = reply.get("test_code", "")
                 if not isinstance(self.test_code, str) or not self.test_code.strip():
@@ -164,7 +167,7 @@ class _Hunt:
                 self.data["repro"].update(test_code=self.test_code, why=reply.get("why", ""))
                 self.bad_types = set()
                 shas = [self.bad] + ([self.good] if self.good_ref else [])
-                outcomes = await asyncio.gather(*(self.probe(sha, round_number=0, offset=0 if sha == self.bad else None)
+                outcomes = await gather(*(self.probe(sha, round_number=0, offset=0 if sha == self.bad else None)
                                                   for sha in shas))
                 bad_result, bad_status, bad_reason = outcomes[0]
                 self.bad_types = failure_types(bad_result.output)
@@ -230,7 +233,7 @@ class _Hunt:
             entry = {"n": number, "lo_before": lo, "hi_before": hi, "probes": [], "lo_after": lo, "hi_after": hi}
             self.data["rounds"].append(entry)
             self.events.emit("round_started", round=number, lo=lo, hi=hi, probes=probes)
-            outcomes = await asyncio.gather(*(self.probe(self.commits[i].sha, round_number=number, index=i) for i in probes))
+            outcomes = await gather(*(self.probe(self.commits[i].sha, round_number=number, index=i) for i in probes))
             statuses = {}
             for i, (result, status, reason) in zip(probes, outcomes):
                 statuses[i] = status
@@ -249,7 +252,7 @@ class _Hunt:
     async def confirm(self) -> None:
         guilty = self.commits[self.hi]
         previous = self.commits[self.lo].sha if self.lo >= 0 else self.good
-        outcomes = await asyncio.gather(*(self.probe(sha, round_number=-1, index=i)
+        outcomes = await gather(*(self.probe(sha, round_number=-1, index=i)
             for sha, i in [(guilty.sha, self.hi), (previous, self.lo)] * 2))
         confirmed = [status for _, status, _ in outcomes] == [Status.FAIL, Status.PASS] * 2
         if not confirmed:
@@ -266,11 +269,11 @@ class _Hunt:
                                            test_output=culprit["output"], diff=culprit["diff"])
         role = "ultra"
         try:
-            reply = await asyncio.to_thread(self.llm.chat_json, role, prompts.EXPLAIN_SYSTEM, user, purpose="explain_culprit")
+            reply = await run_blocking(self.llm.chat_json, role, prompts.EXPLAIN_SYSTEM, user, purpose="explain_culprit")
         except LLMError:
             role = "super"
             self.warn("Ultra explanation failed; using Super for the explanation.")
-            reply = await asyncio.to_thread(self.llm.chat_json, role, prompts.EXPLAIN_SYSTEM, user, purpose="explain_culprit")
+            reply = await run_blocking(self.llm.chat_json, role, prompts.EXPLAIN_SYSTEM, user, purpose="explain_culprit")
         self.data["explanation"] = dict(reply, model=self.llm.describe()[role]["label"])
 
     async def run(self) -> tuple[dict, int]:
@@ -279,7 +282,7 @@ class _Hunt:
             async with self.stage("prepare"):
                 await self.prepare()
             async with self.stage("context"):
-                ctx = await asyncio.to_thread(context.build_context, self.repo, self.bad, self.bug, self.llm)
+                ctx = await run_blocking(context.build_context, self.repo, self.bad, self.bug, self.llm)
                 self.data["context"] = {"files": list(ctx.files), "picked_by": ctx.picked_by}
                 if self.offline and ctx.picked_by == "Nemotron 3 Nano":
                     self.data["context"]["picked_by"] += " (offline stand-in)"
@@ -332,13 +335,20 @@ class _Hunt:
                 close = getattr(self.llm, "close", None)
                 if close:
                     try:
-                        await asyncio.to_thread(close)
+                        await run_blocking(close)
                     except Exception:
                         self.warn("Could not fully close the model client.")
             self.data.update(finished_at=_now(), seconds=round(time.monotonic() - self.t0, 3))
-            self.data = redact_data(self.data, (self.settings.api_key or "",))
-            async with self.stage("report"):
-                write_report(self.data, self.out_dir)
+            self.data = redact_data(self.data, (self.settings.api_key or "", self.settings.project_id or ""))
+            try:
+                async with self.stage("report"):
+                    write_report(self.data, self.out_dir)
+            except Exception as exc:
+                code = 1
+                self.data.update(ok=False, reason=redact(
+                    f"Could not write report: {exc}",
+                    (self.settings.api_key or "", self.settings.project_id or ""),
+                ))
             self.events.emit("run_finished", ok=self.data["ok"], reason=self.data["reason"],
                              seconds=self.data["seconds"], out_dir=str(self.out_dir))
         return self.data, code

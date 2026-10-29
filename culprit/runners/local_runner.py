@@ -10,12 +10,12 @@ import asyncio
 import os
 import signal
 import shutil
-import stat
 import sys
 import tempfile
 import time
 from pathlib import Path
 
+from culprit.gitops import remove_tree as _remove_tree
 from culprit.runners.base import RunResult, Runner
 from culprit.runners.scripts import SCRIPTS
 from culprit.security import execution_env
@@ -25,23 +25,9 @@ class LocalRunnerError(RuntimeError):
     pass
 
 
-def _remove_tree(path: Path) -> None:
-    """Git object files can be read-only on Windows, even in our own temp clones."""
-    if not path.exists():
-        return
-
-    def remove_readonly(function, filename, exc_info):
-        if not isinstance(exc_info[1], PermissionError):
-            raise exc_info[1]
-        os.chmod(filename, stat.S_IWRITE)
-        function(filename)
-
-    shutil.rmtree(path, onerror=remove_readonly)
-
-
 async def _exec(cmd: list[str], env: dict | None = None) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=env
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, env=execution_env() if env is None else env
     )
     try:
         out, _ = await proc.communicate()
@@ -88,7 +74,7 @@ class LocalRunner(Runner):
 
     async def prepare(self, bundle: Path, head_sha: str) -> str:
         if shutil.which("sh") is None:
-            raise LocalRunnerError("Local mode needs a POSIX shell (macOS, Linux or WSL).")
+            raise LocalRunnerError("Local mode needs a POSIX shell (macOS, Linux, WSL or Git Bash).")
         code, out = await _exec([sys.executable, "-m", "pytest", "--version"])
         if code != 0:
             raise LocalRunnerError("Local mode needs pytest in this Python: pip install pytest")
