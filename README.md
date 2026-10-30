@@ -14,6 +14,51 @@ Culprit turns a plain-English bug report into a reproducible pytest test, search
 
 ## Quick start: no credentials
 
+### Interactive browser demo
+
+The optional Flask adapter runs the existing offline engine and serves its real
+progress, result, report, and downloadable evidence. Install and start it locally:
+
+```bash
+python -m pip install -e ".[dev,web]"
+python -m culprit.web
+```
+
+Open **http://127.0.0.1:5000**, then click **Run Demo Investigation**. The server
+performs a fresh hunt; it does not replay a saved result. Repository and bug inputs
+are fixed to the bundled example because offline model replies are scripted for it.
+The public adapter accepts no arbitrary paths, shell commands, uploads, repositories,
+or live credentials. Existing CLI commands continue to work independently.
+
+**Render:** create a Python Web Service from this repository using `render.yaml`,
+or enter these settings manually. The repository root contains `pyproject.toml`;
+leave Render's Root Directory blank for the GitHub repository.
+
+- Build: `pip install -e ".[dev,web]" && culprit demo-repo --force`
+- Start: `gunicorn --workers 1 --threads 4 --timeout 120 --bind 0.0.0.0:$PORT 'culprit.web:create_app()'`
+- Health check: `/health`
+- Environment: `PYTHON_VERSION=3.12.10`, `CULPRIT_WEB_PARALLEL=2`; Render supplies `PORT`.
+- No `.env`, API credentials, GPU, database, or frontend build pipeline is required.
+
+The single worker holds job state in memory and runs one investigation at a time.
+Concurrent visitors join the active demo. Two local probes run at once by default
+(the CLI default is unchanged); `CULPRIT_WEB_PARALLEL` is limited to 1–4. Five jobs
+are retained. Artifacts and jobs are ephemeral: restarting or redeploying loses
+them, and the browser can start again. A small/free instance can take longer than
+the local CLI and can have a cold start. Do not enable multiple Gunicorn workers
+or instance autoscaling for this in-process adapter.
+
+Routes: `GET /`, `GET /health`, `GET /api/demo` (configuration), `POST /api/demo`
+(start/join), `GET /api/demo/<id>` (events/result), `GET /reports/<id>` (the existing
+HTML report), and `GET /api/demo/<id>/artifacts/<filename>` (allowlisted evidence).
+
+This is an interactive **offline demonstration**: scripted model replies and real
+local Git/pytest execution. Live Nebius acceptance remains pending; **G2 is BLOCKED**.
+Deployment requires publishing these changes and connecting Render; no public
+Render URL or successful deployment is claimed here.
+
+### CLI demo
+
 Requirements: **Python 3.11+**, Git, and `sh` and `tar` for local execution. Use macOS, Linux, WSL, or **Git Bash on Windows**. Installation downloads Python dependencies; the bundled offline hunt itself needs no network or credentials. Run commands in the checkout directory containing `pyproject.toml` (in the supplied workspace, that is `culprit/`).
 
 macOS / Linux / WSL:

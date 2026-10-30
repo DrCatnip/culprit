@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: culprit
+    runtime: python
+    plan: free
+    buildCommand: pip install -e ".[dev,web]" && culprit demo-repo --force
+    startCommand: gunicorn --workers 1 --threads 4 --timeout 120 --bind 0.0.0.0:$PORT 'culprit.web:create_app()'
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: CULPRIT_WEB_PARALLEL
+        value: "2"

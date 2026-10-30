@@ -14,12 +14,16 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+web = ["flask>=3.1", "gunicorn>=23; sys_platform != 'win32'"]
 
 [project.scripts]
 culprit = "culprit.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["culprit*"]
+
+[tool.setuptools.package-data]
+culprit = ["web_assets/*.html", "web_assets/*.css", "web_assets/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

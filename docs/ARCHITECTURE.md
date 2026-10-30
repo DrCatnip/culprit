@@ -2,7 +2,15 @@
 
 [README and quick start](../README.md) · [Offline example report](index.html)
 
-Culprit is a Python CLI. Git/history inspection and patch construction happen on the host; repository code runs in Nebius Sandboxes by default. The explicitly selected local runner is reserved for the bundled demo or repositories trusted with `--i-trust-this-repo`. There is no backend server, database, web app, or provider substitution.
+Culprit's core is a Python CLI. Git/history inspection and patch construction happen on the host; repository code runs in Nebius Sandboxes by default. The explicitly selected local runner is reserved for the bundled demo or repositories trusted with `--i-trust-this-repo`. An optional Flask adapter now exposes the fixed offline demo in a browser; it adds no database or provider substitution.
+
+The optional `culprit.web` app factory serves packaged `web_assets/` and uses one
+in-process worker to call the existing `hunt(..., offline=True)`. Requests return a
+job ID; polling exposes real `EventLog` entries and engine results. Fix generation
+and verification share the engine's existing `fix` stage. The existing renderer
+produces report/evidence routes, with a sandboxed iframe preview. Browser input
+cannot select arbitrary repositories, paths, commands, or live execution. Render
+uses one Gunicorn worker with request threads; restart/eviction discards demo jobs.
 
 **Status:** live Nebius integration is implemented and mock-tested. G2 remains BLOCKED solely by unavailable live credentials. Offline mode substitutes scripted model replies and real local Git/pytest execution; it does not demonstrate live Sandbox or model success.
 

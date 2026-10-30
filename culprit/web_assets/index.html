@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Culprit investigates Git regressions and checks fixes. Run a real, credential-free offline investigation in your browser.">
+  <meta name="color-scheme" content="dark">
+  <title>Culprit — Autonomous Git Bug Investigator</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#investigate">Skip to investigation</a>
+  <header class="site-header shell">
+    <a class="brand" href="/" aria-label="Culprit home"><span class="brand-mark" aria-hidden="true">c.</span>Culprit<span class="brand-note">/ Git investigation</span></a>
+    <span class="mode-pill"><i aria-hidden="true"></i> OFFLINE DEMO MODE</span>
+  </header>
+  <main class="shell">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="eyebrow"><span aria-hidden="true">↳</span> Autonomous Git Bug Investigator</div>
+      <h1 id="hero-title">Find the change.<br><span>Prove the fix.</span></h1>
+      <p class="hero-copy">Turn a bug report into the offending commit, an explanation, and a verified fix.</p>
+      <p class="provenance">This demo runs a fresh investigation. Model responses are scripted; Git, bisection, and pytest execute locally on the server.</p>
+      <div class="workflow" aria-label="Workflow"><span>Reproduce</span><b aria-hidden="true">→</b><span>Investigate</span><b aria-hidden="true">→</b><span>Verify</span><b aria-hidden="true">→</b><span>Evidence</span></div>
+    </section>
+
+    <div class="workspace" id="investigate">
+      <aside class="control-column">
+        <section class="panel form-panel" aria-labelledby="setup-title">
+          <div class="section-label"><span>01 / Investigation</span><span class="tiny-tag">DEMO</span></div>
+          <h2 id="setup-title">A bill that doesn't add up.</h2>
+          <p class="muted">Find a rounding regression in the bundled kirana-billing history.</p>
+          <form id="demo-form">
+            <label for="repository">Repository</label>
+            <input id="repository" name="repository" value="kirana-billing" readonly aria-describedby="repo-help">
+            <p class="field-help" id="repo-help">Bundled repository only. No uploads or arbitrary repository code.</p>
+            <label for="bug">Bug report</label>
+            <textarea id="bug" name="bug" rows="6" readonly aria-describedby="bug-help">Loading the bundled bug report…</textarea>
+            <p class="field-help" id="bug-help">The offline model is scripted for this exact bug.</p>
+            <label for="mode">Investigation mode</label>
+            <select id="mode" name="mode">
+              <option value="offline">Offline Demo · real local verification</option>
+              <option value="live" disabled>Live Nebius · engine / CLI configuration required</option>
+            </select>
+            <button type="submit" class="primary-button" id="run-button" disabled><span>Run Demo Investigation</span><span aria-hidden="true">↗</span></button>
+          </form>
+          <p class="run-note">No credentials required. First startup can take longer while the demo is prepared.</p>
+          <p class="error-message" id="error" role="alert" hidden></p>
+          <noscript><p class="error-message">Enable JavaScript to start an investigation and receive progress.</p></noscript>
+        </section>
+
+        <section class="panel timeline-panel" aria-labelledby="timeline-title">
+          <div class="section-label">02 / Investigation trail</div>
+          <h2 id="timeline-title">Follow the evidence.</h2>
+          <ol class="timeline" id="timeline">
+            <li data-stage="repro"><span class="step-icon">01</span><div><b>Reproduce</b><small>Waiting</small></div></li>
+            <li data-stage="scout"><span class="step-icon">02</span><div><b>Scout</b><small>Waiting</small></div></li>
+            <li data-stage="bisect"><span class="step-icon">03</span><div><b>Parallel bisect</b><small>Waiting</small></div></li>
+            <li data-stage="confirm"><span class="step-icon">04</span><div><b>Confirm culprit</b><small>Waiting</small></div></li>
+            <li data-stage="explain"><span class="step-icon">05</span><div><b>Explain regression</b><small>Waiting</small></div></li>
+            <li data-stage="fix"><span class="step-icon">06</span><div><b>Generate fixes</b><small>Waiting</small></div></li>
+            <li data-stage="fix"><span class="step-icon">07</span><div><b>Verify fixes</b><small>Waiting</small></div></li>
+            <li data-stage="report"><span class="step-icon">08</span><div><b>Generate evidence</b><small>Waiting</small></div></li>
+          </ol>
+          <p class="field-help">Generation and verification share the engine's fix stage. Finished stages do not imply every candidate passed.</p>
+        </section>
+      </aside>
+
+      <div class="evidence-column">
+        <section class="panel investigation-panel" aria-labelledby="activity-title">
+          <div class="section-label"><span>03 / Execution</span><span class="status-label" id="job-status">READY</span></div>
+          <h2 id="activity-title">One bug. A trail of proof.</h2>
+          <p class="muted" id="activity-detail" role="status" aria-live="polite">Start the demo to reproduce the bug, search history, and verify candidate fixes.</p>
+          <div class="empty-state" id="empty-state">
+            <div class="history-art" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <p>“It worked before.”<br><span>Let's find out exactly when it stopped.</span></p>
+            <div class="empty-notes"><span>Isolated local checks</span><span>First-parent Git history</span><span>Verified patch export</span></div>
+          </div>
+          <ol class="event-log" id="event-log" aria-label="Actual investigation events" hidden></ol>
+        </section>
+
+        <div id="results" hidden>
+          <section class="panel culprit-panel" aria-labelledby="culprit-title">
+            <div class="section-label"><span id="culprit-label">Investigation result</span><span class="result-badge" id="confirmation"></span></div>
+            <p class="culprit-sha" id="culprit-sha"></p>
+            <h2 id="culprit-title"></h2>
+            <p class="muted" id="culprit-meta"></p>
+            <dl class="metrics" id="metrics"></dl>
+            <details class="bug-details"><summary>Original bug report</summary><p id="result-bug"></p></details>
+          </section>
+          <section class="panel" aria-labelledby="explanation-title">
+            <div class="section-label">04 / Root cause</div>
+            <h2 id="explanation-title"></h2>
+            <p id="root-cause"></p>
+            <p class="model-note" id="explanation-model"></p>
+            <div class="code-comparison"><div><h3>Before</h3><pre><code id="before-code"></code></pre></div><div><h3>After</h3><pre><code id="after-code"></code></pre></div></div>
+            <h3>Why the old tests missed it</h3><p class="muted" id="missed"></p>
+          </section>
+          <section class="panel" aria-labelledby="fix-title">
+            <div class="section-label">05 / Fix &amp; verification</div>
+            <h2 id="fix-title">A fix earns its place.</h2>
+            <p class="muted" id="fix-summary"></p>
+            <div id="candidates" class="candidate-list"></div>
+          </section>
+          <section class="panel" aria-labelledby="evidence-title">
+            <div class="section-label">06 / Evidence</div>
+            <h2 id="evidence-title">Take the proof with you.</h2>
+            <p class="muted">The full report is produced by Culprit's existing report renderer. It includes the replay, test output, candidate failures, usage, and selected patch.</p>
+            <a class="primary-button report-button" id="report-link" target="_blank" rel="noopener noreferrer">View Full Investigation Report <span aria-hidden="true">↗</span></a>
+            <div class="artifact-links" id="artifact-links"></div>
+            <details id="report-preview"><summary>Preview the report here</summary><iframe id="report-frame" title="Full Culprit investigation report" sandbox loading="lazy"></iframe></details>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <section class="live-note" aria-labelledby="live-title"><span class="tiny-tag">LIVE ENGINE</span><div><h2 id="live-title">The same engine. Configurable live execution.</h2><p>Live Nebius Token Factory + NVIDIA Nemotron execution is supported by the Culprit engine when credentials are configured. This web demo uses scripted responses and local verification. <strong>G2 remains BLOCKED because live Nebius credentials are unavailable.</strong></p></div></section>
+    <footer><span>Culprit · Evidence before confidence.</span><a href="https://github.com/DrCatnip/culprit" target="_blank" rel="noopener noreferrer">CLI, architecture &amp; source ↗</a></footer>
+  </main>
+</body>
+</html>

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — optional Render web adapter
+
+- Add a Flask API and responsive vanilla HTML/CSS/JavaScript interface for fresh
+  bundled offline investigations using the existing hunt engine and event log.
+- Display actual progress, culprit, explanation, candidate verification, test
+  counts, and allowlisted evidence downloads; reuse the existing HTML renderer.
+- Restrict browser requests to the fixed demo, redact diagnostics, bound the
+  in-process job worker/history, and sandbox the report preview.
+- Add optional web dependencies, packaged static assets, focused API/integration
+  tests, and a Render Blueprint with Gunicorn and `/health`.
+- Keep the core algorithm, CLI, model IDs, and provider/runner integrations intact.
+  Live G2 acceptance remains blocked by unavailable Nebius credentials. A Render
+  deployment is not claimed until it is actually performed and verified.
+
 ## Unreleased — Phase 8 hardening
 
 - Drain sibling probes and verification tasks after failure or cancellation before
